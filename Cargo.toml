@@ -1,0 +1,11 @@
+[package]
+name = "sql-zero"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bincode= { version = "2.0.1",features = ["serde"] }
+fs4 = "0.13.1"
+serde ={version = "1.0.219",features = ["derive"]}
+serde_bytes = "0.11.17"
+tempfile = "3.23.0"
