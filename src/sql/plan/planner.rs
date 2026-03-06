@@ -1,9 +1,10 @@
+use crate::error::{Error, Result};
 use crate::sql::parser::ast;
-use crate::sql::parser::ast::Statement;
 use crate::sql::plan::{Node, Plan};
 use crate::sql::schema;
 use crate::sql::schema::Table;
 use crate::sql::types::Value;
+use crate::storage::mvcc::MvccKey::NextVersion;
 
 pub struct Planner;
 
@@ -12,19 +13,19 @@ impl Planner {
         Self {}
     }
 
-    pub fn build(&self, stmt: ast::Statement) -> Plan {
-        Plan(self.build_statement(stmt))
+    pub fn build(&self, stmt: ast::Statement) -> Result<Plan> {
+        Ok(Plan(self.build_statement(stmt)?))
     }
 
-    fn build_statement(&self, stmt: ast::Statement) -> Node {
-        match stmt {
+    fn build_statement(&self, stmt: ast::Statement) -> Result<Node> {
+       Ok(match stmt {
             ast::Statement::CreateTable { name, columns } => Node::CreateTable {
                 schema: Table {
                     name,
                     columns: columns
                         .into_iter()
                         .map(|c| {
-                            let nullable = c.nullable.unwrap_or(true);
+                            let nullable = c.nullable.unwrap_or(!c.primary_key);
                             let default = match c.default {
                                 Some(expr) => Some(Value::from_expression(expr)),
                                 Node if nullable => Some(Value::Null),
@@ -35,6 +36,7 @@ impl Planner {
                                 datatype: c.datatype,
                                 nullable,
                                 default,
+                                primary_key: c.primary_key,
                             }
                         })
                         .collect(),
@@ -49,7 +51,64 @@ impl Planner {
                 columns: columns.unwrap_or_default(),
                 values,
             },
-            ast::Statement::Select { table_name } => Node::Scan { table_name },
-        }
+            ast::Statement::Select {
+                select,
+                table_name,
+                order_by,
+                limit,
+                offset } => {
+                let mut node = Node::Scan { table_name, filter: None };
+                if !order_by.is_empty(){
+                    node = Node::Order {
+                        source:Box::new(node),
+                        order_by,
+                    }
+                }
+                // 解析offset
+                if let Some(offset) = offset{
+                node = Node::Offset {
+                        source:Box::new(node),
+                        offset:match Value::from_expression(offset){
+                            Value::Integer(i) => i as usize,
+                            _ => return Err(Error::Internal("offset must be an integer".to_string()))
+                        },
+                    }
+                }
+                // 解析limit
+                if let Some(limit) = limit{
+                    node = Node::Limit {
+                        source:Box::new(node),
+                        limit:match Value::from_expression(limit){
+                            Value::Integer(i) => i as usize,
+                            _ => return Err(Error::Internal("limit must be an integer".to_string()))
+                        },
+                    }
+                }
+                // 解析投影
+                if !select.is_empty(){
+                  node = Node::Projection {
+                      source:Box::new(node),
+                      exprs:select
+                  }
+                }
+                node
+            }
+            ast::Statement::Update {
+                table_name,
+                columns,
+                where_clause
+            }=>Node::Update{
+                table_name: table_name.clone(),
+                source: Box::new(Node::Scan{table_name, filter: where_clause }),
+                columns,
+            },
+            ast::Statement::Delete{
+                table_name,
+                where_clause,
+            }=>Node::Delete{
+                table_name: table_name.clone(),
+                source: Box::new(Node::Scan{table_name, filter: where_clause }),
+            }
+        })
     }
 }

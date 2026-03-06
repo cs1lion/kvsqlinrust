@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use crate::error::{Error, Result};
 use crate::sql::engine::Transaction;
 use crate::sql::executor::{Executor, ResultSet};
 use crate::sql::parser::ast::Expression;
-use crate::error::{Error, Result};
 use crate::sql::schema::Table;
 use crate::sql::types::{Row, Value};
+use std::collections::{BTreeMap, HashMap};
 
 pub struct Insert {
     table_name: String,
@@ -27,60 +27,145 @@ impl Insert {
 }
 
 //列对齐
-fn pad_row(table:&Table,row:&Row)->Result<Row> {
+fn pad_row(table: &Table, row: &Row) -> Result<Row> {
     let mut results = row.clone();
     for column in table.columns.iter().skip(row.len()) {
         if let Some(default) = &column.default {
             results.push(default.clone());
         } else {
-            return Err(Error::Internal(format!("No default value for column {}", column.name)));
+            return Err(Error::Internal(format!(
+                "No default value for column {}",
+                column.name
+            )));
         }
     }
     Ok(results)
 }
 
-fn make_row(table:&Table,columns:&Vec<String>,values:&Row)->Result<Row> {
+fn make_row(table: &Table, columns: &Vec<String>, values: &Row) -> Result<Row> {
     //判断列数是否和value一致
-    if columns.len()!=values.len() {
+    if columns.len() != values.len() {
         return Err(Error::Internal(format!("columns and values num mismatch")));
     }
     let mut inputs = HashMap::new();
-    for(i,col_name) in columns.iter().enumerate() {
-        inputs.insert(col_name,values[i].clone());
+    for (i, col_name) in columns.iter().enumerate() {
+        inputs.insert(col_name, values[i].clone());
     }
     let mut results = Vec::new();
     for col in table.columns.iter() {
-      if let Some(value)=  inputs.get(&col.name){
-          results.push(value.clone());
-      }else if let Some(value) = &col.default{
-          results.push(value.clone())
-      }else{
-          return Err(Error::Internal(format!("No value given for column {}", col.name)));
-      }
+        if let Some(value) = inputs.get(&col.name) {
+            results.push(value.clone());
+        } else if let Some(value) = &col.default {
+            results.push(value.clone())
+        } else {
+            return Err(Error::Internal(format!(
+                "No value given for column {}",
+                col.name
+            )));
+        }
     }
     Ok(results)
 }
 impl<T: Transaction> Executor<T> for Insert {
-    
-   
-    fn execute(self:Box<Self>, txn: &mut T) -> Result<ResultSet> {
+    fn execute(self: Box<Self>, txn: &mut T) -> Result<ResultSet> {
         let mut count = 0;
         //先取出表信息
         let table = txn.must_get_table(self.table_name.clone())?;
-        for exprs in self.values{
+        for exprs in self.values {
             //将表达式转换成value
-            let row = exprs.into_iter().map(|e|Value::from_expression(e))
+            let row = exprs
+                .into_iter()
+                .map(|e| Value::from_expression(e))
                 .collect::<Vec<_>>();
             //如果没有指定插入的列
-            let insert_row = if self.columns.is_empty(){
+            let insert_row = if self.columns.is_empty() {
                 pad_row(&table, &row)?
-            }else{
+            } else {
                 //指定了插入的列，需要对value重新整理
-                make_row(&table,&self.columns,&row)?
+                make_row(&table, &self.columns, &row)?
             };
-            txn.create_row(self.table_name.clone(),insert_row)?;
+            txn.create_row(self.table_name.clone(), insert_row)?;
             count += 1;
-        }  
-        Ok(ResultSet::Insert {count})
+        }
+        Ok(ResultSet::Insert { count })
+    }
+}
+
+// Update 执行器
+pub struct Update<T: Transaction> {
+    table_name: String,
+    source: Box<dyn Executor<T>>,
+    columns: BTreeMap<String,Expression>,
+}
+
+impl<T:Transaction> Update<T>{
+    pub fn new(table_name:String,source:Box<dyn Executor<T>>,columns:BTreeMap<String,Expression>)->Box<Self>{
+        Box::new(Self{
+            table_name,
+            source,
+            columns,
+        })
+    }
+}
+impl<T:Transaction>Executor<T> for Update<T>{
+    fn execute(self: Box<Self>, txn: &mut T) -> Result<ResultSet> {
+        let mut updated = 0;
+        // 执行扫描操作，获取扫描到的结果
+        match self.source.execute(txn)?{
+            ResultSet::Scan {columns,rows} => {
+                let table = txn.must_get_table(self.table_name)?;
+                for row in rows{
+                    let mut update_row = row.clone();
+                    let pk = table.get_primary_key(&row)?;
+                    for (i,col) in columns.iter().enumerate() {
+                        if let Some(expr) = self.columns.get(col){
+                            update_row[i] = Value::from_expression(expr.clone())
+                        }
+                    }
+                    // 执行更新操作
+                    txn.update_row(&table,&pk, update_row)?;
+                    // 如果有主键更新，删除原来的数据，新增一条
+                    // 否则就 table_name + primary key => 更新数据
+
+                    updated += 1;
+                }
+            },
+            _ =>  return Err(Error::Internal("Update source must be Scan".into())),
+        }
+        Ok(ResultSet::Update { count: updated })
+    }
+}
+
+// Delete执行器
+pub struct Delete<T: Transaction> {
+    table_name: String,
+    source: Box<dyn Executor<T>>,
+}
+
+impl<T:Transaction> Delete<T>{
+    pub fn new(table_name:String,source:Box<dyn Executor<T>>)->Box<Self>{
+        Box::new(Self{
+            table_name,
+            source,
+        })
+    }
+}
+impl<T:Transaction>Executor<T> for Delete<T>{
+    fn execute(self: Box<Self>, txn: &mut T) -> Result<ResultSet> {
+        let mut deleted = 0;
+        // 执行扫描操作，获取扫描到的结果
+        match self.source.execute(txn)?{
+            ResultSet::Scan { columns: _columns,rows} => {
+                let table = txn.must_get_table(self.table_name)?;
+                for row in rows{
+                    let pk = table.get_primary_key(&row)?;
+                    // 执行删除操作
+                    txn.delete_row(&table,&pk)?;
+                    deleted += 1;
+                }
+            },
+            _ =>  return Err(Error::Internal("Delete source must be Scan".into())),
+        }
+        Ok(ResultSet::Delete { count: deleted })
     }
 }

@@ -1,9 +1,10 @@
 use crate::error::{Error, Result};
 use crate::sql::executor::ResultSet;
+use crate::sql::parser::ast::Expression;
 use crate::sql::parser::Parser;
 use crate::sql::plan::Plan;
 use crate::sql::schema::Table;
-use crate::sql::types::Row;
+use crate::sql::types::{Row, Value};
 
 mod kv;
 //抽象的 SQL 引擎层定义
@@ -26,21 +27,28 @@ pub trait Transaction {
     fn rollback(&self) -> Result<()>;
     //创建行
     fn create_row(&mut self, table_name: String, row: Row) -> Result<()>;
+    //更新行
+    fn update_row(&mut self, table: &Table,id:&Value, row: Row) -> Result<()>;
+    //删除行
+    fn delete_row(&mut self, table: &Table,id:&Value) -> Result<()>;
     //扫描表
-    fn scan_table(&self, table_name: String) -> Result<Vec<Row>>;
+    fn scan_table(&self, table_name: String,filter:Option<(String,Expression)>) -> Result<Vec<Row>>;
     //DDL相关操作
     fn create_table(&mut self, table: Table) -> Result<()>;
     //获取表信息
     fn get_table(&self, table_name: String) -> Result<Option<Table>>;
     //获取表信息，否则报错
-    fn must_get_table(&self, table_name: String) -> Result<Table>{
-        self.get_table(table_name.clone())?.
-            ok_or(Error::Internal(format!("table {} does not exist", table_name)))
+    fn must_get_table(&self, table_name: String) -> Result<Table> {
+        self.get_table(table_name.clone())?
+            .ok_or(Error::Internal(format!(
+                "table {} does not exist",
+                table_name
+            )))
     }
 }
 
 //客户端Session定义
-pub struct Session<E: Engine> {
+pub struct Session<E: Engine + 'static> {
     engine: E,
 }
 impl<E: Engine> Session<E> {
@@ -50,7 +58,7 @@ impl<E: Engine> Session<E> {
             stmt => {
                 let mut txn = self.engine.begin()?;
                 //构建plan，执行SQL语句
-                match Plan::build(stmt).execute(&mut txn) {
+                match Plan::build(stmt)?.execute(&mut txn) {
                     Ok(result) => {
                         txn.commit()?;
                         Ok(result)

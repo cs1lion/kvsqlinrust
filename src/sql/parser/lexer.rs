@@ -28,6 +28,8 @@ pub enum Token {
     Minus,
     // 斜杠 /
     Slash,
+    // 等号 =
+    Equal,
 }
 
 impl Display for Token {
@@ -45,6 +47,7 @@ impl Display for Token {
             Token::Plus => "+",
             Token::Minus => "-",
             Token::Slash => "/",
+            Token::Equal => "=",
         })
     }
 }
@@ -74,6 +77,17 @@ pub enum Keyword {
     Null,
     Primary,
     Key,
+    Update,
+    Set,
+    Where,
+    Delete,
+    Order,
+    By,
+    Asc,
+    Desc,
+    Limit,
+    Offset,
+    As,
 }
 
 impl Keyword {
@@ -102,6 +116,17 @@ impl Keyword {
             "NULL" => Keyword::Null,
             "PRIMARY" => Keyword::Primary,
             "KEY" => Keyword::Key,
+            "UPDATE" => Keyword::Update,
+            "SET" => Keyword::Set,
+            "WHERE" => Keyword::Where,
+            "DELETE" => Keyword::Delete,
+            "ORDER" => Keyword::Order,
+            "BY" => Keyword::By,
+            "ASC" => Keyword::Asc,
+            "DESC" => Keyword::Desc,
+            "LIMIT" => Keyword::Limit,
+            "OFFSET" => Keyword::Offset,
+            "AS" => Keyword::As,
             _ => return None,
         })
     }
@@ -130,6 +155,17 @@ impl Keyword {
             Keyword::Null => "NULL",
             Keyword::Primary => "PRIMARY",
             Keyword::Key => "KEY",
+            Keyword::Update => "UPDATE",
+            Keyword::Set => "SET",
+            Keyword::Where => "WHERE",
+            Keyword::Delete => "DELETE",
+            Keyword::Order => "ORDER",
+            Keyword::By => "BY",
+            Keyword::Asc => "ASC",
+            Keyword::Desc => "DESC",
+            Keyword::Limit => "LIMIT",
+            Keyword::Offset => "OFFSET",
+            Keyword::As => "AS",
         }
     }
 }
@@ -141,32 +177,7 @@ impl Display for Keyword {
 }
 // 词法分析 lexer的定义
 // 目前支持的 SQL 语法
-// 1. Create Table
-// -------------------------------------------------
-// CREATE TABLE table_name {
-//      [ column_name data_type [ column_constraint[...] ] ]
-//      [, ... ]
-//      );
-//
-//      where data_type is:
-//       - BOOLEAN(BOOL): true | false
-//       - FLOAT(DOUBLE)
-//       - INTEGER(INT)
-//       - STRING(TEXT, VARCHAR)
-//
-//      where column_constraint is:
-//      [ NOT NULL | NULL | DEFAULT expr]
-//}
-//
-// 2. Insert Into
-// -------------------------------------------------------
-// INSERT INTO table_name
-// [ ( column_name [, ...] ) ]
-// values ( expr [, ...] );
-//
-// 3.Select
-// ---------------------------------------------------------
-// SELECT * FROM table_name;
+// 见Readme.md
 pub struct Lexer<'a> {
     iter: Peekable<Chars<'a>>,
 }
@@ -286,6 +297,7 @@ impl<'a> Lexer<'a> {
             ')' => Some(Token::CloseParen),
             ',' => Some(Token::Comma),
             ';' => Some(Token::Semicolon),
+            '=' => Some(Token::Equal),
             _ => None,
         })
     }
@@ -296,7 +308,6 @@ impl<'a> Lexer<'a> {
 mod tests {
     use super::{Keyword, Lexer, Token};
     use crate::error::Result;
-    use crate::sql::parser::lexer::Token::Comma;
 
     #[test]
     fn test_lexer_create_table() -> Result<()> {

@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::iter::Peekable;
 
 use ast::Column;
 use lexer::{Keyword, Lexer, Token};
 
 use crate::error::{Error, Result};
-
+use crate::sql::parser::ast::{Expression, OrderDirection};
+use crate::sql::parser::lexer::Keyword::Order;
 use super::types::DataType;
 
 pub mod ast;
@@ -40,6 +42,8 @@ impl<'a> Parser<'a> {
             Some(Token::Keyword(Keyword::Create)) => self.parse_ddl(),
             Some(Token::Keyword(Keyword::Select)) => self.parse_select(),
             Some(Token::Keyword(Keyword::Insert)) => self.parse_insert(),
+            Some(Token::Keyword(Keyword::Update)) => self.parse_update(),
+            Some(Token::Keyword(Keyword::Delete)) => self.parse_delete(),
             Some(t) => Err(Error::Parse(format!("[Parser] Unexpected token {}", t))),
             None => Err(Error::Parse(format!("[Parser] Unexpected end of input"))),
         }
@@ -58,13 +62,31 @@ impl<'a> Parser<'a> {
 
     // 解析 Select 语句
     fn parse_select(&mut self) -> Result<ast::Statement> {
-        self.next_expect(Token::Keyword(Keyword::Select))?;
-        self.next_expect(Token::Asterisk)?;
+        // 解析select列信息
+        let select = self.parse_select_clause()?;
         self.next_expect(Token::Keyword(Keyword::From))?;
 
         // 表名
         let table_name = self.next_ident()?;
-        Ok(ast::Statement::Select { table_name })
+        Ok(ast::Statement::Select {
+            table_name,
+            order_by: self.parse_order_clause()?,
+            limit: {
+                if self.next_if_token(Token::Keyword(Keyword::Limit)).is_some(){
+                        Some(self.parse_expression()?)
+                }else{
+                    None
+                }
+            },
+            offset: {
+                if self.next_if_token(Token::Keyword(Keyword::Offset)).is_some(){
+                    Some(self.parse_expression()?)
+                }else{
+                    None
+                }
+            },
+            select
+            })
     }
 
     // 解析 Insert 语句
@@ -166,6 +188,7 @@ impl<'a> Parser<'a> {
             },
             nullable: None,
             default: None,
+            primary_key: false,
         };
 
         // 解析列的默认值，以及是否可以为空
@@ -177,16 +200,116 @@ impl<'a> Parser<'a> {
                     column.nullable = Some(false);
                 }
                 Keyword::Default => column.default = Some(self.parse_expression()?),
+                Keyword::Primary=>{
+                    self.next_expect(Token::Keyword(Keyword::Key))?;
+                    column.primary_key = true;
+                }
                 k => return Err(Error::Parse(format!("[Parser] Unexpected keyword {}", k))),
             }
         }
 
         Ok(column)
     }
+    // 解析 Update 语句
+    fn parse_update(&mut self) -> Result<ast::Statement> {
+        self.next_expect(Token::Keyword(Keyword::Update))?;
+        // 期望是 Table 名
+        let table_name = self.next_ident()?;
+        // 表名之后应该是 SET 关键字
+        self.next_expect(Token::Keyword(Keyword::Set))?;
+        // 解析列信息
+        let mut columns = BTreeMap::new();
+        loop {
+            let col = self.next_ident()?;
+            // 如果没有逗号，列解析完成，跳出
+            self.next_expect(Token::Equal);
+            let value = self.parse_expression()?;
+            if columns.contains_key(&col) {
+                return Err(Error::Parse(format!("[Parser] Duplicate column {} for update", col)));
+            }
+            columns.insert(col, value);
+            // 如果后续没有逗号，则列解析完成，跳出
+            if self.next_if_token(Token::Comma).is_none() {
+                break;
+            }
+            }
+        Ok(ast::Statement::Update {
+            table_name,
+            columns,
+            where_clause: self.parse_where_clause()?,
+        })
+        }
+    fn parse_where_clause(&mut self)->Result<Option<(String,Expression)>> {
+        if self.next_if_token(Token::Keyword(Keyword::Where)).is_none(){
+                return Ok(None);
+        }
+        let col = self.next_ident()?;
+        self.next_expect(Token::Equal);
+        let value = self.parse_expression()?;
+        Ok(Some((col,value)))
+    }
+
+    fn parse_delete(&mut self)-> Result<ast::Statement> {
+        self.next_expect(Token::Keyword(Keyword::Delete))?;
+        self.next_expect(Token::Keyword(Keyword::From))?;
+        let table_name = self.next_ident()?;
+
+        Ok(ast::Statement::Delete{
+            table_name,where_clause: self.parse_where_clause()?
+        })
+    }
+
+    fn parse_order_clause(&mut self) -> Result<Vec<(String,OrderDirection)>> {
+        let mut orders = Vec::new();
+        if self.next_if_token(Token::Keyword(Keyword::Order)).is_none(){
+            return Ok(orders);
+        }
+        self.next_expect(Token::Keyword(Keyword::By))?;
+        loop {
+            let col = self.next_ident()?;
+            let ord = match self.next_if(|t| matches!(t,Token::Keyword(Keyword::Asc)|Token::Keyword(Keyword::Desc))){
+                Some(Token::Keyword(Keyword::Asc))=>OrderDirection::Asc,
+                Some(Token::Keyword(Keyword::Desc))=>OrderDirection::Desc,
+                _=>OrderDirection::Asc,
+            };
+            orders.push((col,ord));
+            if self.next_if_token(Token::Comma).is_none() {
+            break;
+            }
+        }
+
+        Ok(orders)
+    }
+    fn parse_select_clause(&mut self) -> Result<Vec<(Expression,Option<String>)>>{
+        self.next_expect(Token::Keyword(Keyword::Select))?;
+
+        let mut select = Vec::new();
+        // select *
+        if self.next_if_token(Token::Asterisk).is_some() {
+            return Ok(select);
+        }
+
+        loop {
+            let expr = self.parse_expression()?;
+            // 是否有别名
+           let alias = match self.next_if_token(Token::Keyword(Keyword::As)){
+               Some(_) => Some(self.next_ident()?),
+               None => None,
+            };
+            select.push((expr,alias));
+            if self.next_if_token(Token::Comma).is_none(){
+                break;
+            }
+        }
+        Ok(select)
+    }
 
     // 解析表达式
     fn parse_expression(&mut self) -> Result<ast::Expression> {
         Ok(match self.next()? {
+            Token::Ident(ident) =>{
+                Expression::Field(ident)
+            }
             Token::Number(n) => {
                 if n.chars().all(|c| c.is_ascii_digit()) {
                     // 整数
@@ -204,7 +327,7 @@ impl<'a> Parser<'a> {
                 return Err(Error::Parse(format!(
                     "[Parser] Unexpected expression token {}",
                     t
-                )))
+                )));
             }
         })
     }
@@ -258,8 +381,11 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use crate::{error::Result, sql::parser::ast};
-
+    use crate::sql::parser::ast::Consts::Integer;
+    use crate::sql::parser::ast::Expression::Consts;
+    use crate::sql::parser::ast::{Expression, OrderDirection};
     use super::Parser;
 
     #[test]
@@ -345,14 +471,55 @@ mod tests {
 
     #[test]
     fn test_parser_select() -> Result<()> {
-        let sql = "select * from tbl1;";
+        let sql = "select * from tbl1 limit 10 offset 20;";
         let stmt = Parser::new(sql).parse()?;
         assert_eq!(
             stmt,
             ast::Statement::Select {
-                table_name: "tbl1".to_string()
+                table_name: "tbl1".to_string(),
+                order_by: vec![],
+                limit: Some(Consts(Integer(10))),
+                offset: Some(Consts(Integer(20))),
+                select: vec![],            }
+        );
+
+        let sql = "select a as col1,b as col2,c from tbl1 order by a, b asc ,c desc;";
+        let stmt = Parser::new(sql).parse()?;
+        assert_eq!(
+            stmt,
+            ast::Statement::Select {
+                table_name: "tbl1".to_string(),
+                order_by: vec![
+                    ("a".to_string(),OrderDirection::Asc),
+                    ("b".to_string(),OrderDirection::Asc),
+                    ("c".to_string(),OrderDirection::Desc)
+                ],
+                limit: None,
+                offset: None,
+                select: vec![
+                    (Expression::Field("a".into()),Some("col1".into())),
+                    (Expression::Field("b".into()),Some("col2".into())),
+                    (Expression::Field("c".into()),None),
+                ]
             }
         );
+        Ok(())
+    }
+    #[test]
+    fn test_parser_update() -> Result<()> {
+        let sql = "update tbl1 set a = 100, b = 2.0 where c = 'a';";
+        let stmt = Parser::new(sql).parse()?;
+        assert_eq!(stmt,
+            ast::Statement::Update {
+                table_name: "tbl1".into(),
+                columns: vec![
+                    ("a".into(), ast::Consts::Integer(100).into()),
+                    ("b".into(), ast::Consts::Float(2.0).into()),
+                ].into_iter().collect(),
+                where_clause:Some(("c".into(),ast::Consts::String("a".into()).into())),
+            }
+        );
+        println!("{:?}", stmt);
         Ok(())
     }
 }
