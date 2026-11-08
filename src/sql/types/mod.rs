@@ -1,10 +1,10 @@
-use std::cmp::Ordering;
-use std::fmt::Display;
-use bincode::{Decode, Encode};
-use crate::sql::parser::ast::{Consts, Expression};
+use std::{cmp::Ordering, fmt::Display, hash::Hash};
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Serialize, Deserialize,Decode,Encode)]
+use super::parser::ast::{Consts, Expression};
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum DataType {
     Boolean,
     Integer,
@@ -12,7 +12,7 @@ pub enum DataType {
     String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize,Decode,Encode)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Null,
     Boolean(bool),
@@ -29,7 +29,7 @@ impl Value {
             Expression::Consts(Consts::Integer(i)) => Self::Integer(i),
             Expression::Consts(Consts::Float(f)) => Self::Float(f),
             Expression::Consts(Consts::String(s)) => Self::String(s),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -43,34 +43,61 @@ impl Value {
         }
     }
 }
+
 impl Display for Value {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self{
-            Self::Null => write!(fmt, "Null"),
-            Self::Boolean(b) if *b=> write!(fmt, "{}", "TRUE"),
-            Self::Boolean(_) => write!(fmt, "{}", "FALSE"),
-            Self::Integer(i) => write!(fmt, "{}", i),
-            Self::Float(f) => write!(fmt, "{}", f),
-            Self::String(s) => write!(fmt, "{}", s),
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Null => write!(f, "{}", "NULL"),
+            Value::Boolean(b) if *b => write!(f, "{}", "TRUE"),
+            Value::Boolean(_) => write!(f, "{}", "FALSE"),
+            Value::Integer(v) => write!(f, "{}", v),
+            Value::Float(v) => write!(f, "{}", v),
+            Value::String(v) => write!(f, "{}", v),
         }
     }
 }
 
 impl PartialOrd for Value {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match (self,other) {
-            (Self::Null, Self::Null) => Some(Ordering::Equal),
-            (Self::Null, _) => Some(Ordering::Less),
-            (_, Self::Null) => Some(Ordering::Greater),
-            (Self::Boolean(b1), Self::Boolean(b2)) => b1.partial_cmp(b2),
-            (Self::Integer(i1), Self::Integer(i2)) => i1.partial_cmp(i2),
-            (Self::Integer(i1), Self::Float(f2)) => (*i1 as f64).partial_cmp(f2),
-            (Self::Float(f1), Self::Float(f2)) => f1.partial_cmp(f2),
-            (Self::Float(f2), Self::Integer(i3)) => f2.partial_cmp(&(*i3 as f64)),
-            (Self::String(s1), Self::String(s2)) => s1.partial_cmp(s2),
-            (_,_) => None,
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (Value::Null, Value::Null) => Some(Ordering::Equal),
+            (Value::Null, _) => Some(Ordering::Less),
+            (_, Value::Null) => Some(Ordering::Greater),
+            (Value::Boolean(a), Value::Boolean(b)) => a.partial_cmp(b),
+            (Value::Integer(a), Value::Integer(b)) => a.partial_cmp(b),
+            (Value::Integer(a), Value::Float(b)) => (*a as f64).partial_cmp(b),
+            (Value::Float(a), Value::Integer(b)) => a.partial_cmp(&(*b as f64)),
+            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+            (Value::String(a), Value::String(b)) => a.partial_cmp(b),
+            (_, _) => None,
         }
     }
 }
+
+impl Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Value::Null => state.write_u8(0),
+            Value::Boolean(v) => {
+                state.write_u8(1);
+                v.hash(state);
+            }
+            Value::Integer(v) => {
+                state.write_u8(2);
+                v.hash(state);
+            }
+            Value::Float(v) => {
+                state.write_u8(3);
+                v.to_be_bytes().hash(state);
+            }
+            Value::String(v) => {
+                state.write_u8(2);
+                v.hash(state);
+            }
+        }
+    }
+}
+
+impl Eq for Value {}
 
 pub type Row = Vec<Value>;

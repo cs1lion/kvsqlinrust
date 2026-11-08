@@ -1,9 +1,8 @@
-use crate::error::Result;
-use crate::storage::engine::EngineIterator;
-use std::collections::{BTreeMap, btree_map};
-use std::ops::RangeBounds;
+use std::collections::{btree_map, BTreeMap};
 
-//内存存储引擎定义
+use crate::error::Result;
+
+// 内存存储引擎定义
 pub struct MemoryEngine {
     data: BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -34,19 +33,19 @@ impl super::engine::Engine for MemoryEngine {
         Ok(())
     }
 
-    fn scan(&mut self, range: impl RangeBounds<Vec<u8>>) -> Self::EngineIterator<'_> {
+    fn scan(&mut self, range: impl std::ops::RangeBounds<Vec<u8>>) -> Self::EngineIterator<'_> {
         MemoryEngineIterator {
             inner: self.data.range(range),
         }
     }
 }
 
-//内存存储引擎迭代器
+// 内存存储引擎迭代器
 pub struct MemoryEngineIterator<'a> {
     inner: btree_map::Range<'a, Vec<u8>, Vec<u8>>,
 }
 
-impl<'a> EngineIterator for MemoryEngineIterator<'a> {}
+impl<'a> super::engine::EngineIterator for MemoryEngineIterator<'a> {}
 
 impl<'a> MemoryEngineIterator<'a> {
     fn map(item: (&Vec<u8>, &Vec<u8>)) -> <Self as Iterator>::Item {
@@ -54,8 +53,10 @@ impl<'a> MemoryEngineIterator<'a> {
         Ok((k.clone(), v.clone()))
     }
 }
+
 impl<'a> Iterator for MemoryEngineIterator<'a> {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
+
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(Self::map)
     }
