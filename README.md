@@ -1,112 +1,57 @@
 # kvsqlinrust
 
-`kvsqlinrust` is a lightweight SQL engine implemented in Rust, supporting SQL parsing, query execution, and storage engine interactions over Key-Value backends. It is also a teaching-oriented implementation: every layer (lexer, parser, planner, executor, MVCC transaction, disk log storage) is written from scratch without a third-party SQL or storage library.
+A SQL database engine written from scratch in Rust on top of a key-value storage layer. Crate: `sqldb-rs`.
 
-The crate is named `sqldb-rs` (imported as `sqldb_rs`).
-
-## Core Features
-
-- **SQL Parsing & Lexing**: Custom lexer and recursive-descent parser for SQL statements.
-- **Relational Query Engine**: DDL & DML processing including table creation/drop, insertion, updates, deletion, and selection.
-- **Query Planning**: `EXPLAIN` support and a planner that chooses primary-key lookup, index scan, or full table scan.
-- **Aggregation & Joins**: `GROUP BY` with `count`/`min`/`max`/`sum`/`avg`, plus `JOIN`, `LEFT JOIN`, `RIGHT JOIN` and `CROSS JOIN` (including a hash join optimization).
-- **Indexes**: Column-level secondary indexes maintained on insert/update/delete.
-- **Transactions**: `BEGIN`/`COMMIT`/`ROLLBACK` with MVCC isolation (dirty read, unrepeatable read, phantom read and write-conflict protection).
-- **KV Storage Abstraction**: Abstract storage driver mapping relational schema and row records to Key-Value pairs, with memory and disk (log-structured) engines.
-- **Type System**: Supports `BOOLEAN`, `FLOAT`/`DOUBLE`, `INTEGER`/`INT`, and `STRING`/`TEXT`/`VARCHAR` data types with constraint enforcement (`NOT NULL`, `DEFAULT`).
-- **Server & Client**: An async TCP server plus an interactive REPL client (`rustyline`).
-
-## Architecture & Module Overview
-
-- **Parser Layer**: Transforms raw SQL strings into Abstract Syntax Trees (AST).
-- **Planning Layer**: Builds and optimizes query plans from the AST.
-- **Execution Engine**: Executes AST nodes against the underlying KV storage backend.
-- **Transaction Layer**: MVCC transactions on top of the storage engine.
-- **Storage Layer**: Encodes relational records into byte keys and values for KV storage.
-
-## Quick Start & Testing
-
-Build the project and run test suites with `cargo`:
+## Build & run
 
 ```bash
-# Build the project
 cargo build --release
+cargo test                # 41 tests
 
-# Run unit and integration tests
-cargo test
+cargo run --bin server    # 127.0.0.1:8080, or pass <addr>
+cargo run --bin client    # interactive REPL to a running server
 ```
 
-The repository contains 41 unit tests covering the parser, executor, MVCC transactions and the disk engine.
-
-### Server & Client
-
-Start the TCP server (defaults to `127.0.0.1:8080`, override with the first argument), then connect the REPL client:
-
-```bash
-cargo run --bin server            # or: cargo run --bin server -- 127.0.0.1:9000
-cargo run --bin client            # or: cargo run --bin client -- 127.0.0.1:9000
-```
-
-## Supported SQL Syntax
-
-### 1. Create/Drop Table
-```sql
-CREATE TABLE table_name (
-  column_name data_type [index] [ column_constraint [...] ]
-  [, ... ]
-);
-
--- data_type: BOOLEAN(BOOL) | FLOAT(DOUBLE) | INTEGER(INT) | STRING(TEXT, VARCHAR)
--- column_constraint: [ NOT NULL | NULL | DEFAULT expr ]
-```
+## SQL syntax
 
 ```sql
-DROP TABLE table_name;
-```
+CREATE TABLE t (id INT PRIMARY KEY, name STRING, age INT INDEX);
+DROP TABLE t;
 
-### 2. Insert Into
-```sql
-INSERT INTO table_name [ ( column_name [, ...] ) ] VALUES ( expr [, ...] );
-```
+INSERT INTO t VALUES (1, 'a', 20);
+UPDATE t SET age = 21 WHERE id = 1;
+DELETE FROM t WHERE id = 1;
 
-### 3. Select
-```sql
-SELECT [* | col_name | function [ [ AS ] output_name [, ...] ]]
-FROM from_item
-[GROUP BY col_name]
-[ORDER BY col_name [ASC | DESC] [, ...]]
-[LIMIT count]
-[OFFSET count];
-```
+SELECT [* | col | count(col) | min(col) | max(col) | sum(col) | avg(col)]
+FROM t
+[GROUP BY col]
+[ORDER BY col [ASC | DESC]]
+[LIMIT n] [OFFSET n];
 
-where `function` is `count(col_name)`, `min(col_name)`, `max(col_name)`, `sum(col_name)` or `avg(col_name)`.
+-- joins: t1 [CROSS] JOIN | LEFT JOIN | RIGHT JOIN t2 [ON a.col = b.col]
+-- types: BOOLEAN | FLOAT/DOUBLE | INTEGER/INT | STRING/TEXT/VARCHAR
+-- constraints: NOT NULL | NULL | DEFAULT expr
 
-where `from_item` is a `table_name`, or `table_name join_type table_name [ON predicate]`; `join_type` is `CROSS JOIN`, `JOIN`, `LEFT JOIN` or `RIGHT JOIN`, and `predicate` is `column_name = column_name`.
-
-### 4. Update
-```sql
-UPDATE table_name SET col_name = expr [, ...] [ WHERE condition ];
-```
-
-### 5. Delete
-```sql
-DELETE FROM table_name [ WHERE condition ];
-```
-
-### 6. Show Tables
-```sql
 SHOW TABLES;
-SHOW TABLE `table_name`;
+SHOW TABLE `t`;
+BEGIN; COMMIT; ROLLBACK;
+EXPLAIN <statement>;
 ```
 
-### 7. Transactions
-```sql
-BEGIN;
-COMMIT;
-ROLLBACK;
+## Layout
+
+```
+src/sql/parser     lexer and recursive-descent parser -> AST
+src/sql/plan       query plans (primary-key lookup, index scan, full scan)
+src/sql/executor   DDL, DML, aggregation, joins, expressions
+src/sql/engine     KV-backed relational engine (tables, rows, indexes)
+src/storage        memory and log-structured disk engines, key encoding, MVCC
+src/bin            async TCP server and REPL client
 ```
 
-### 8. Explain
-```sql
-EXPLAIN sql;
-```
+## Known limitations
+
+- Edition 2021, not 2024; the async server/client relies on tokio 1.x.
+- Storage encoding uses `bincode` 2.x and `fs4` 0.13; data written by older bincode 1.x builds is not guaranteed to be readable.
+- Single node and teaching-oriented: no replication, no authentication, no crash-recovery guarantee beyond the disk log.
+- `Cargo.lock` is not committed (library convention); it is generated on build.
